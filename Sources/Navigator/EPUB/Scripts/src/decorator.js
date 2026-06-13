@@ -15,6 +15,41 @@ import { log, logErrorMessage, rangeFromLocator } from "./utils";
 import { ResizeObserver as ResizeObserverPolyfill } from "@juggle/resize-observer";
 const ResizeObserver = window.ResizeObserver || ResizeObserverPolyfill;
 
+// === GLOSS P0 PROBE — temporary instrumentation, reverted in revert-instrumentation commit ===
+if (!window.__gloss_p0_probe) {
+  window.__gloss_p0_probe = [];
+}
+const __glossP0push = (kind, payload) => {
+  window.__gloss_p0_probe.push({ kind, t: Date.now(), ...payload });
+};
+const __glossP0xpath = (node) => {
+  if (!node) return null;
+  const parts = [];
+  let cur = node;
+  while (cur && cur.nodeType !== 9 /* DOCUMENT_NODE */) {
+    if (cur.nodeType === 3 /* TEXT_NODE */) {
+      let idx = 1;
+      let sib = cur.previousSibling;
+      while (sib) {
+        if (sib.nodeType === 3) idx++;
+        sib = sib.previousSibling;
+      }
+      parts.unshift(`text()[${idx}]`);
+    } else {
+      let idx = 1;
+      let sib = cur.previousElementSibling;
+      while (sib) {
+        if (sib.tagName === cur.tagName) idx++;
+        sib = sib.previousElementSibling;
+      }
+      parts.unshift(`${cur.tagName.toLowerCase()}[${idx}]`);
+    }
+    cur = cur.parentNode;
+  }
+  return "/" + parts.join("/");
+};
+// === END GLOSS P0 PROBE setup ===
+
 let styles = new Map();
 let groups = new Map();
 var lastGroupId = 0;
@@ -142,6 +177,41 @@ export function DecorationGroup(groupId, groupName) {
       log("Can't locate DOM range for decoration", decoration);
       return;
     }
+
+    // === GLOSS P0 PROBE A — reconstructed-range fields at add() time ===
+    __glossP0push("add-range", {
+      decoration_id: decoration.id,
+      locator_text_highlight_head: (
+        decoration.locator?.text?.highlight ?? ""
+      ).slice(0, 60),
+      locator_text_before_tail: (decoration.locator?.text?.before ?? "").slice(
+        -60
+      ),
+      locator_text_after_head: (decoration.locator?.text?.after ?? "").slice(
+        0,
+        60
+      ),
+      range_start: {
+        node: __glossP0xpath(range.startContainer),
+        offset: range.startOffset,
+        container_tag: range.startContainer.parentElement?.tagName,
+      },
+      range_end: {
+        node: __glossP0xpath(range.endContainer),
+        offset: range.endOffset,
+        container_tag: range.endContainer.parentElement?.tagName,
+      },
+      range_collapsed: range.collapsed,
+      start_in_indexterm:
+        range.startContainer.parentElement?.matches?.(
+          'a[data-type="indexterm"]'
+        ) ?? false,
+      end_in_indexterm:
+        range.endContainer.parentElement?.matches?.(
+          'a[data-type="indexterm"]'
+        ) ?? false,
+    });
+    // === END GLOSS P0 PROBE A ===
 
     let item = { id, decoration, range };
     items.push(item);
@@ -344,6 +414,27 @@ export function DecorationGroup(groupId, groupName) {
           return r1.left - r2.left;
         }
       });
+
+      // === GLOSS P0 PROBE B — raw + filtered clientRects at layout() time ===
+      const __glossP0rawRects = [...item.range.getClientRects()].map((r) => ({
+        x: r.x,
+        y: r.y,
+        w: r.width,
+        h: r.height,
+      }));
+      __glossP0push("layout-rects", {
+        decoration_id: item.decoration.id,
+        raw_clientRects_count: __glossP0rawRects.length,
+        raw_clientRects: __glossP0rawRects,
+        post_filter_count: clientRects.length,
+        post_filter_rects: clientRects.map((r) => ({
+          x: r.left,
+          y: r.top,
+          w: r.width,
+          h: r.height,
+        })),
+      });
+      // === END GLOSS P0 PROBE B ===
 
       for (let clientRect of clientRects) {
         const line = elementTemplate.cloneNode(true);
